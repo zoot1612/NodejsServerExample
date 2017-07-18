@@ -1,6 +1,5 @@
 {
   "command": "route",
-  "options": [
-  ],
+  "options": "",
   "description": "Display current routing table for Server."
 }
