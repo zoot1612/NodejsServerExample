@@ -3,12 +3,65 @@
 var
 http = require('http'),
 path = require('path'),
+util = require('util'),
 fs = require('fs');
 
 const
 port = 8080,
+logPort = 8081,
 rootFolder = __dirname + '/public/'
-cgiFolder = rootFolder + 'cgi-bin/';
+cgiFolder = rootFolder + 'cgi-bin/',
+logFolder = rootFolder + 'logs/',
+server = http.createServer(requestHandler);
+logger = http.createServer(logHandler);
+
+fs.mkdir(logFolder, function (error, folder) {
+	if(!error || (error && error.code === 'EEXIST')){
+	} else {
+		console.log(error);
+	}
+});
+
+logFile = fs.createWriteStream(logFolder + 'debug.log')
+
+console.log = function () {
+  var 
+  prepend = colors.fg.Yellow + ' INFO: ' + colors.Reset;
+  consoleAll (prepend, arguments);
+}
+
+console.error = function () {
+  var 
+  prepend = colors.fg.Red + '  ERR: ' + colors.Reset;
+  consoleAll (prepend, arguments);
+}
+
+function consoleAll (prepend, arguments) {
+	function time() {
+		var now = new Date();
+			function AddZero(num, timeType) {
+				num = (num >= 0 && num < 10) ? "0" + num : num + "";
+				if (timeType === 1) {
+					num = (num >= 0 && num < 100) ? "0" + num : num + "";
+				};
+				return num
+			};
+		var strDateTime = [[[AddZero(now.getDate()), 
+		AddZero(now.getMonth() + 1), 
+		now.getFullYear()].join("/"), 
+		[AddZero(now.getHours()), 
+		AddZero(now.getMinutes())].join(":"),
+		AddZero(now.getSeconds())].join(" "),
+		AddZero(now.getMilliseconds(),1)].join(".");
+	  //currentMs = (currentMs<100) ? "0" + currentMs : currentMs;
+		return(strDateTime); 
+	};
+	var logTime = time()
+  process.stdout.write(logTime + prepend);
+  var newArg = util.format.apply(util, arguments);
+  process.stdout.write(colors.fg.Green  + newArg + colors.Reset + '\n');
+  logFile.write(logTime + ' INFO: ' + newArg + '<br>\n');
+}
 
 extensions = {
 	".html" : "text/html",
@@ -20,57 +73,73 @@ extensions = {
 	".cgi" : "application/x-httpd-cgi",
 };
 
-var logtime = (function formatConsoleDate (date) {
-        var hour = date.getHours();
-        var minutes = date.getMinutes();
-        var seconds = date.getSeconds();
-        var milliseconds = date.getMilliseconds();
+server.on('error', function (err) {
+  console.error('Error: %s occurred. Address: %s port: %s system call: %s.', err.code, err.address, err.port, err.syscall);
+});
 
-        return '[' +
-               ((hour < 10) ? '0' + hour: hour) +
-               ':' +
-               ((minutes < 10) ? '0' + minutes: minutes) +
-               ':' +
-               ((seconds < 10) ? '0' + seconds: seconds) +
-               '.' +
-               ('00' + milliseconds).slice(-3) +
-               '] ';
-    });
+server.listen(port, function (err) {
+  //console.error(Object.keys(server.address()));
+	var	info = server.address();
+  console.log('Command server started at address %s port %s family %s',info.address, info.port, info.family);
+});
 
+logger.on('error', function (err) {
+  console.error('Error: %s occurred. Address: %s port: %s system call: %s.', err.code, err.address, err.port, err.syscall);
+});
 
+logger.listen(logPort, function (err) {
+	var	info = logger.address();
+  console.log('Log server started at address %s port %s family %s',info.address, info.port, info.family);
+});
 
 function textToHTML(text)
 {
-    return ((text || "") + "")  // make sure it is a string;
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/\t/g, "    ")
-        .replace(/ /g, "&#8203;&nbsp;&#8203;")
-        .replace(/\r\n|\r|\n/g, "<br />");
+	return ((text || "") + "")
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/\t/g, "    ")
+		.replace(/ /g, "&#8203;&nbsp;&#8203;")
+		.replace(/\r\n|\r|\n/g, "<br />");
 }
 
 function doCGI(contents, res) {
-	var cgiCommand = JSON.parse(contents)
+	var
+	cgiCommand = JSON.parse(contents),
+	command = cgiCommand.command,
+  options = cgiCommand.options;
+
+  if (Array.isArray(options)) {
+    options = options;
+  } else {
+    options = [];
+  }
 
 	const { spawn } = require('child_process');
-	const child = spawn(cgiCommand.command, cgiCommand.options);
+	const child = spawn(command, options);
 	var response = "";
 
 	child.stdout.on('data', function (data) {
-		console.log('child stdout: %s.',data);
 		response += data.toString ();
 	});
 
 	child.stderr.on('data', function (data) {
+		response += data.toString ();
+	});
+
+	child.on('error', function (err) {
 		console.error('child stderr: %s.',data);
 		response += data.toString ();
 	});
 
+	child.on('close', (code, signal) => {
+  	console.log('child process %s terminated with code %s and/or signal %s', command, code, signal);
+	});
+
 	child.on('exit', function (code, signal) {
-		console.log('child process exited with code %s and %s', code, signal);
+		console.log('child process %s exited with code %s and/or signal %s', command, code, signal);
 		if (code == 0) {
-			console.log(response);
+			//console.log(response);
 			response = textToHTML(response);
 			var html = htmlbase();
 			html += '		<body>';
@@ -90,32 +159,50 @@ function doCGI(contents, res) {
 	});
 };
 
-function getFile(fileName, res, mimeType) {
-	var filePath = (rootFolder + fileName);
-	if(mimeType === "application/x-httpd-cgi") {
-		filePath = (cgiFolder + fileName);
-	};
-	fs.exists(filePath,function(exists) {
-		if(exists) {
-			fs.readFile(filePath,function(err,contents) {
-				if(!err) {
-					if(mimeType === "application/x-httpd-cgi") {
-						//console.log(formatConsoleDate(new Date()), 'CGI page requested');
-						doCGI(contents, res);
-					} else {
-						res.writeHead(200, {
-							//console.log(formatConsoleDate(new Date()), `${fileName} page requested`);
-							"Content-type" : mimeType,
-							"Content-Length" : contents.length
-						});
-					res.end(contents);
-					};
-				} else {
-					console.error(err);
-				};
-			});
-			} else if (fileName == "index.html") {
-				//console.log(formatConsoleDate(new Date()), 'Index page requested');
+function getFile(req, res) {
+	var	newPath = path.join(rootFolder, req.url);
+	newPath = (rootFolder === newPath) ? path.join(rootFolder, 'index.html')  : newPath;
+
+	var
+	filePath = path.dirname(newPath),
+	fileName = path.basename(newPath),
+	ext = path.extname(newPath),
+	fileShort = path.basename(newPath, ext),
+  mimeType = extensions[ext];
+
+	console.log('newPath:' + newPath);
+	console.log('filePath:' + filePath); 
+	console.log('fileName:' + fileName);
+	console.log('ext:' + ext);
+	console.log('file:' + fileShort);
+	console.log('mimeType:' + mimeType);
+
+	fs.readFile(newPath, function(error, contents) {
+		if(!error) {
+			if(mimeType === "application/x-httpd-cgi") {
+				console.log('CGI page %s requested.', fileName );
+				doCGI(contents, res);
+			} else if(!ext || !mimeType) {
+				console.log('Unsupported media page requested');
+			  res.writeHead(415, {'Content-Type': 'text/html'});
+			  var html = htmlbase();
+			  html += '<body>';
+			  html += '<h1>Unsupported Media Type</h1>';
+			  html += '<p>Sorry, but The filetype of the request is unsupported.</p>';
+			  html += '</body>';
+			  html += '</html>';
+			  res.end(html);
+			} else {
+				console.log('Page %s requested.', fileName );
+				res.writeHead(200, {
+					"Content-type" : mimeType,
+					"Content-Length" : contents.length
+				});
+			res.end(contents);
+			};
+		} else {
+			if (fileName == 'index.html') {
+				console.log('Index page requested');
 				res.writeHead(200, {'Content-Type': 'text/html'});
 				var html = htmlbase();
 				html += '<body>';
@@ -124,18 +211,8 @@ function getFile(fileName, res, mimeType) {
 				html += '</body>';
 				html += '</html>';
 				res.end(html);
-			} else if (!mimeType) {
-				//console.log(formatConsoleDate(new Date()), 'Unsupported media page requested');
-				res.writeHead(415, {'Content-Type': 'text/html'});
-				var html = htmlbase();
-				html += '<body>';
-				html += '<h1>Unsupported Media Type</h1>';
-				html += '<p>Sorry, but The filetype of the request is unsupported.</p>';
-				html += '</body>';
-				html += '</html>';
-				res.end(html);
 			} else {
-				//console.log(formatConsoleDate(new Date()), 'Non-existent page requested');
+				console.log('Non-existent page requested');
 				res.writeHead(404, {'Content-Type': 'text/html'});
 				var html = htmlbase();
 				html += '<body>';
@@ -144,27 +221,33 @@ function getFile(fileName, res, mimeType) {
 				html += '</body>';
 				html += '</html>';
 				res.end(html);
+				console.error('%s occurred. Code: %s system call: %s path %s.', error.errno, error.code, error.syscall, error.path);
+				console.error(error.message);
 			};
+		};
 	});
 };
 
 function requestHandler(req, res) {
-	var
-	fileName = path.basename(req.url) || 'index.html',
-	ext = path.extname(fileName);
-	getFile(fileName, res, extensions[ext]);
+	getFile(req, res);
 };
 
-const server = http.createServer(requestHandler)
-
-server.on('error', function (e) {
-  console.error('Error: %s occurred address: %s port: %s system call: %s.'
-  , e.code, e.address, e.port, e.syscall);
-});
-
-server.listen(port, function (err) {
-  console.log(logtime(new Date()) + 'Server started', server.address());
-});
+function logHandler(req, res) {
+	fs.readFile(logFolder + 'debug.log',function(err, contents) {
+	  var html = htmlbase();
+	  html += '		<body>';
+	  html += '		<div id="inlineImage"></div>';
+	  html += '		<h1> Log </h1>';
+	  html += '		<pre>' + contents + '</pre>';
+	  html += '		</body>';
+  	html += '</html>';
+	  res.writeHead(200, {
+		  "Content-type" : "text/html",
+		  "Content-Length" : html.length
+	  });
+	  res.end(html);
+	});
+};
 
 function htmlbase () {
 var html = "";
@@ -173,21 +256,22 @@ html += '<html lang="en">\n';
 html += '<head>\n';
 html += '    <meta charset="utf-8">\n';
 html += '    <title>Server</title>\n';
+html += '    <link id="dynamic-favicon" rel="icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUAAAAFCAYAAACNbyblAAAAHElEQVQI12P4//8/w38GIAXDIBKE0DHxgljNBAAO9TXL0Y4OHwAAAABJRU5ErkJggg==">\n';
 html += '    <style>\n';
 html += '        * {';
-html += '            line-height: 1.2;\n';
+//html += '            line-height: 1.2;\n';
 html += '            margin: 0;\n';
 html += '        }\n';
 html += '        html {\n';
 html += '            color: #888;\n';
-html += '            display: table;\n';
+//html += '            display: table;\n';
 html += '            font-family: sans-serif;\n';
 html += '            height: 100%;\n';
 html += '            text-align: center;\n';
 html += '            width: 100%;\n';
 html += '        }\n';
 html += '        body {\n';
-html += '            display: table-cell;\n';
+//html += '            display: table-cell;\n';
 html += '            vertical-align: middle;\n';
 html += '            margin: 2em auto;\n';
 html += '        }\n';
@@ -329,11 +413,11 @@ html +=   'RU5ErkJggg=="\n';
 html +=   'var image = new Image();\n';
 html +=   'image.src = str;\n';
 html +=   'image.onload = function() {\n';
-//html +=   '  document.body.appendChild(image);\n';
 html +=   '  document.getElementById("inlineImage").appendChild(image);\n';
 html +=   '  document.head || (document.head = document.getElementsByTagName("head")[0]);\n';
 html +=   '  var link = document.createElement("link"), oldLink = document.getElementById("dynamic-favicon");\n';
 html +=   '  link.id = "favicon";\n';
+html +=   '  link.align = "top";\n';
 html +=   '  link.rel = "shortcut icon";\n';
 html +=   '  link.type = "image/x-icon";\n';
 html +=   '  link.href = str;\n';
@@ -346,4 +430,166 @@ html +=   '</script>\n';
 html += '</head>\n';
 return html;
 };
+
+const colors = {
+ Reset: "\x1b[0m",
+ Bright: "\x1b[1m",
+ Dim: "\x1b[2m",
+ Underscore: "\x1b[4m",
+ Blink: "\x1b[5m",
+ Reverse: "\x1b[7m",
+ Hidden: "\x1b[8m",
+ fg: {
+  Black: "\x1b[30m",
+  Red: "\x1b[31m",
+  Green: "\x1b[32m",
+  Yellow: "\x1b[33m",
+  Blue: "\x1b[34m",
+  Magenta: "\x1b[35m",
+  Cyan: "\x1b[36m",
+  White: "\x1b[37m",
+  Crimson: "\x1b[38m"
+},
+ bg: {
+  Black: "\x1b[40m",
+  Red: "\x1b[41m",
+  Green: "\x1b[42m",
+  Yellow: "\x1b[43m",
+  Blue: "\x1b[44m",
+  Magenta: "\x1b[45m",
+  Cyan: "\x1b[46m",
+  White: "\x1b[47m",
+  Crimson: "\x1b[48m"
+ }
+};
+
+/*
+
+	fs.readdir(filePath,function(error, directory) {
+		if(!error) {
+		
+			directory.forEach(function(file) {
+
+				if (file.indexOf(fileShort) >= 0) {
+			  	console.log('File found: ', path.join(filePath, file));
+			  	if(!ext || !mimeType) {
+						console.log('Unsupported media page requested');
+			  		res.writeHead(415, {'Content-Type': 'text/html'});
+			  		var html = htmlbase();
+			  		html += '<body>';
+			  		html += '<h1>Unsupported Media Type</h1>';
+			  		html += '<p>Sorry, but The filetype of the request is unsupported.</p>';
+			  		html += '</body>';
+			  		html += '</html>';
+			  		res.end(html);
+					} else if (fileName == 'index.html') {
+						console.log('Index page requested');
+						res.writeHead(200, {'Content-Type': 'text/html'});
+						var html = htmlbase();
+						html += '<body>';
+						html += '<h1>Index</h1>';
+						html += '<p>Nothing to see here :).</p>';
+						html += '</body>';
+						html += '</html>';
+						res.end(html);
+					} else {
+						console.log('Page %s requested.', fileName );
+						res.writeHead(200, {
+							"Content-type" : mimeType,
+							"Content-Length" : contents.length
+						});
+						res.end(contents);
+					};
+
+				} else {
+					console.log('Non-existent page requested');
+					res.writeHead(404, {'Content-Type': 'text/html'});
+					var html = htmlbase();
+					html += '<body>';
+					html += '<h1>Page Not Found</h1>';
+					html += '<p>Sorry, but the page you were trying to view does not exist.</p>';
+					html += '</body>';
+					html += '</html>';
+					res.end(html);
+				};
+			});
+		} else {
+  				console.error('%s occurred. Code: %s system call: %s path %s.', error.errno, error.code, error.syscall, error.path);
+  				console.error(err.message);
+			};
+	});
+--------------------------------------------
+fs.readFile(filePath,function(err, contents) {
+		if(!err) {
+			if(mimeType === "application/x-httpd-cgi") {
+				console.log('CGI page %s requested.', fileName );
+				doCGI(contents, res);
+			} else {
+				console.log('Page %s requested.', fileName );
+				res.writeHead(200, {
+					"Content-type" : mimeType,
+					"Content-Length" : contents.length
+				});
+			res.end(contents);
+			};
+		} else {
+			if (fileName == "index.html") {
+				console.log('Index page requested');
+				res.writeHead(200, {'Content-Type': 'text/html'});
+				var html = htmlbase();
+				html += '<body>';
+				html += '<h1>Index</h1>';
+				html += '<p>Nothing to see here :).</p>';
+				html += '</body>';
+				html += '</html>';
+				res.end(html);
+  			console.error('%s occurred. Code: %s system call: %s path %s.', err.errno, err.code, err.syscall, err.path);
+  			console.error(err.message);
+
+			} else {
+				fs.readdir(filePath,function(err, files) {
+					if(!err) {
+						files.forEach(function(file){
+   			     //if (file.indexOf(filter)>=0) {
+    		 	     console.log('File found: ',filePath + file);
+				console.log('Unsupported media page requested');
+				res.writeHead(415, {'Content-Type': 'text/html'});
+				var html = htmlbase();
+				html += '<body>';
+				html += '<h1>Unsupported Media Type</h1>';
+				html += '<p>Sorry, but The filetype of the request is unsupported.</p>';
+				html += '</body>';
+				html += '</html>';
+				res.end(html);
+  			console.error('%s occurred. Code: %s system call: %s path %s.', err.errno, err.code, err.syscall, err.path);
+  			console.error(err.message);
+
+						});
+					} else {
+				console.log('Non-existent page requested');
+				res.writeHead(404, {'Content-Type': 'text/html'});
+				var html = htmlbase();
+				html += '<body>';
+				html += '<h1>Page Not Found</h1>';
+				html += '<p>Sorry, but the page you were trying to view does not exist.</p>';
+				html += '</body>';
+				html += '</html>';
+				res.end(html);
+  			console.error('%s occurred. Code: %s system call: %s path %s.', err.errno, err.code, err.syscall, err.path);
+  			console.error(err.message);
+					}
+				});
+
+
+			};
+		};
+	});
+
+
+
+
+
+
+
+*/
 
