@@ -127,14 +127,14 @@ function doCGI(contents, res) {
 		response += data.toString ();
 	});
 
-	child.on('error', function (err) {
-		console.error('child stderr: %s.',data);
-		response += data.toString ();
+	child.on('error', function (error) {
+		console.error('child stderr: %s.', error);
+		response += error.toString ();
 	});
 
-	child.on('close', (code, signal) => {
+	child.on('close', function (code, signal) {
   	console.log('child process %s terminated with code %s and/or signal %s', command, code, signal);
-		response += data.toString ();
+    response += error.toString ();
 	});
 
 	child.on('exit', function (code, signal) {
