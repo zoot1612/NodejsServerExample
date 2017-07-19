@@ -134,6 +134,7 @@ function doCGI(contents, res) {
 
 	child.on('close', (code, signal) => {
   	console.log('child process %s terminated with code %s and/or signal %s', command, code, signal);
+		response += data.toString ();
 	});
 
 	child.on('exit', function (code, signal) {
